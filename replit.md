@@ -1,6 +1,6 @@
-# [Project name]
+# Our Order Flow Terminal
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A read-only BTCUSDT order-flow terminal that visualizes real-time Binance public trades with Time & Sales, footprint aggregation, delta tracking, and explicit data-quality state.
 
 ## Run & Operate
 
@@ -22,23 +22,33 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/order-flow-terminal/src/data/` — Binance public trade WebSocket and shared market-data types.
+- `artifacts/order-flow-terminal/src/processing/` — framework-agnostic trade, footprint, and delta engines.
+- `artifacts/order-flow-terminal/src/ui/UIManager.ts` — presentation state bridge and observability counters.
+- `artifacts/order-flow-terminal/src/App.tsx` — terminal surface and route shell.
+- `artifacts/order-flow-terminal/src/index.css` — dark terminal theme and responsive layout.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- V0.1 consumes Binance's public `btcusdt@trade` WebSocket only; it does not request credentials or expose trading controls.
+- Aggressor side is derived from Binance's `m` flag: `m=true` is an aggressive sell, `m=false` an aggressive buy.
+- The order book is intentionally not inferred from trades; DOM, spread, depth imbalance, heatmap, and liquidity detectors remain visibly unavailable until V0.2.
+- Reconnects use bounded exponential backoff and stale-safe connection states.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+V0.1 provides live trade prints, buy/sell volume classification, price-level footprint aggregation, running and cumulative delta, and connection/data-quality observability for BTCUSDT.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Keep the terminal read-only and use public market data only.
+- Prefer correctness and observability over simulated or inferred market data.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- No fake market data fallback is enabled. An empty panel means the real stream has not supplied data.
+- Binance trade timestamps are exchange milliseconds; the quality panel uses the local receipt time for last-update freshness.
+- Run the terminal workflow before using the proxied preview; the Vite artifact requires workflow-provided `PORT` and `BASE_PATH`.
 
 ## Pointers
 

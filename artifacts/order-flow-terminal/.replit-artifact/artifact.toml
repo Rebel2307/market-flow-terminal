@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Our Order Flow Terminal"
+description = "A mobile-friendly personal Binance BTCUSDT order-flow analytics terminal using public real-time trade data, with live Time & Sales, footprint aggregation, delta analysis, and observable connection quality."
+version = "1.0.0"
+id = "artifacts/order-flow-terminal"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20538
+
+[services.development]
+run = "pnpm --filter @workspace/order-flow-terminal run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/order-flow-terminal", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/order-flow-terminal/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20538"
+BASE_PATH = "/"
