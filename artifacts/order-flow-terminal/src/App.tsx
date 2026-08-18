@@ -27,9 +27,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { BinanceTradeStream } from './data/BinanceTradeStream';
-import type { Trade as StreamTrade } from './data/types';
-import { TradeProcessor } from './processing/TradeProcessor';
-import { UIManager } from './ui/UIManager';
+import { MarketDataStore } from './data/MarketDataStore';
+import type { Candle, DeltaBar, KlineInterval, MarketDataState, Trade as StreamTrade } from './data/types';
 
 const queryClient = new QueryClient();
 
@@ -50,7 +49,7 @@ export type FootprintRow = {
 };
 
 export type Status = {
-  connection: 'LIVE' | 'CONNECTING' | 'DISCONNECTED';
+  connection: 'LIVE' | 'CONNECTING' | 'STALE' | 'DISCONNECTED' | 'RECONNECTING';
   wsStatus: string;
   eventCount: number;
   droppedEvents: number;
@@ -60,6 +59,14 @@ export type Status = {
   messagesPerSecond: number;
   processingLatency: number;
   renderingFps: number;
+  connectionTime: number | null;
+  lastReceivedEventTime: number | null;
+  lastMessageTimestamp: number | null;
+  estimatedReceiveLatencyMs: number | null;
+  tradesQuality: 'LIVE' | 'STALE' | 'NOT_CONNECTED';
+  candlesQuality: 'LIVE' | 'STALE' | 'NOT_CONNECTED';
+  footprintQuality: 'LIVE' | 'STALE' | 'NOT_CONNECTED';
+  deltaCvdQuality: 'LIVE' | 'STALE' | 'NOT_CONNECTED';
   streamReason?: string;
 };
 
@@ -68,6 +75,8 @@ export type DeltaSummary = {
   runningSellVolume: number;
   runningDelta: number;
   cumulativeDelta: number;
+  currentBar: DeltaBar | null;
+  bars: DeltaBar[];
 };
 
 export type OrderFlowTerminalProps = {
@@ -75,9 +84,12 @@ export type OrderFlowTerminalProps = {
   footprint?: FootprintRow[];
   status?: Partial<Status> & Pick<Status, 'connection'>;
   delta?: Partial<DeltaSummary>;
+  candles?: Candle[];
+  timeframe?: KlineInterval;
   lastPrice?: number | null;
   onReconnect?: () => void;
   onClearSession?: () => void;
+  onTimeframeChange?: (value: KlineInterval) => void;
 };
 
 const emptyStatus: Status = {
@@ -91,6 +103,14 @@ const emptyStatus: Status = {
   messagesPerSecond: 0,
   processingLatency: 0,
   renderingFps: 0,
+  connectionTime: null,
+  lastReceivedEventTime: null,
+  lastMessageTimestamp: null,
+  estimatedReceiveLatencyMs: null,
+  tradesQuality: 'NOT_CONNECTED',
+  candlesQuality: 'NOT_CONNECTED',
+  footprintQuality: 'NOT_CONNECTED',
+  deltaCvdQuality: 'NOT_CONNECTED',
   streamReason: undefined,
 };
 
@@ -99,6 +119,8 @@ const emptyDelta: DeltaSummary = {
   runningSellVolume: 0,
   runningDelta: 0,
   cumulativeDelta: 0,
+  currentBar: null,
+  bars: [],
 };
 
 function formatPrice(value?: number | null) {
@@ -129,6 +151,12 @@ function connectionMeta(connection: Status['connection']) {
   }
   if (connection === 'CONNECTING') {
     return { label: 'CONNECTING', className: 'connecting', icon: RefreshCw, detail: 'Negotiating stream' };
+  }
+  if (connection === 'RECONNECTING') {
+    return { label: 'RECONNECTING', className: 'connecting', icon: RefreshCw, detail: 'Restoring market data' };
+  }
+  if (connection === 'STALE') {
+    return { label: 'STALE', className: 'connecting', icon: WifiOff, detail: 'No recent market data' };
   }
   return { label: 'DISCONNECTED', className: 'disconnected', icon: WifiOff, detail: 'No market data' };
 }
@@ -268,13 +296,13 @@ function InstrumentBar({
   windowSize: string;
   onWindowChange: (value: string) => void;
 }) {
-  const windows = ['1m', '5m', '15m', '1h'];
+  const windows: KlineInterval[] = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
   return (
     <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-[hsl(var(--border))] px-3 py-2 sm:px-4">
       <div className="flex items-center gap-2">
         <span className="panel-kicker">Workspace</span>
         <ChevronDown size={12} className="text-[hsl(var(--muted-foreground))]" />
-        <span className="font-mono text-[11px] text-[hsl(var(--foreground)/.75)]">BTCUSDT · aggTrade</span>
+         <span className="font-mono text-[11px] text-[hsl(var(--foreground)/.75)]">BTCUSDT · trade + kline</span>
       </div>
       <div className="flex items-center gap-1">
         <span className="mr-2 hidden font-mono text-[9px] uppercase tracking-[.1em] text-[hsl(var(--muted-foreground))] sm:inline">Aggregation</span>
@@ -288,7 +316,7 @@ function InstrumentBar({
   );
 }
 
-function PriceWorkspace({ lastPrice, windowSize, onWindowChange }: { lastPrice?: number | null; windowSize: string; onWindowChange: (value: string) => void }) {
+function PriceWorkspace({ lastPrice, candles, windowSize, onWindowChange }: { lastPrice?: number | null; candles: Candle[]; windowSize: KlineInterval; onWindowChange: (value: KlineInterval) => void }) {
   return (
     <section className="panel overflow-hidden">
       <InstrumentBar windowSize={windowSize} onWindowChange={onWindowChange} />
@@ -305,11 +333,19 @@ function PriceWorkspace({ lastPrice, windowSize, onWindowChange }: { lastPrice?:
             </div>
           </div>
            <div className="relative mx-3 mb-3 sm:mx-4">
-             <EmptyPanel title="Candlestick series not connected" detail="OHLC bars will render here when the market-data adapter supplies candles." icon={BarChart3} className="min-h-[226px]" />
+             {candles.length === 0 ? (
+               <EmptyPanel title="Candlestick series not connected" detail="OHLC bars will render here when the public kline stream supplies candles." icon={BarChart3} className="min-h-[226px]" />
+             ) : (
+               <CandleChart candles={candles} />
+             )}
              <span className="absolute right-2 top-2 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--muted-foreground))]">PRICE SCALE</span>
              <span className="absolute bottom-2 left-2 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--muted-foreground))]">TIME SCALE · UTC</span>
-             <span className="pointer-events-none absolute left-[18%] right-[15%] top-[46%] border-t border-dashed border-[hsl(var(--accent)/.45)]" />
-             <span className="absolute left-[18%] top-[46%] -translate-y-3 bg-[hsl(var(--card))] px-1 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--accent)/.8)]">VWAP · pending</span>
+             {candles.length === 0 ? (
+               <>
+                 <span className="pointer-events-none absolute left-[18%] right-[15%] top-[46%] border-t border-dashed border-[hsl(var(--accent)/.45)]" />
+                 <span className="absolute left-[18%] top-[46%] -translate-y-3 bg-[hsl(var(--card))] px-1 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--accent)/.8)]">VWAP · pending</span>
+               </>
+             ) : null}
            </div>
         </div>
         <div className="grid grid-cols-2 gap-px bg-[hsl(var(--border))] lg:grid-cols-1">
@@ -319,6 +355,45 @@ function PriceWorkspace({ lastPrice, windowSize, onWindowChange }: { lastPrice?:
         </div>
       </div>
     </section>
+  );
+}
+
+function CandleChart({ candles }: { candles: Candle[] }) {
+  const visible = candles.slice(-42);
+  const low = Math.min(...visible.map((candle) => candle.low));
+  const high = Math.max(...visible.map((candle) => candle.high));
+  const range = Math.max(high - low, 0.01);
+  const latest = visible[visible.length - 1];
+
+  return (
+    <div className="placeholder-grid relative min-h-[226px] overflow-hidden px-2 pb-5 pt-4">
+      <div className="absolute left-3 top-2 z-10 flex gap-3 font-mono text-[8px] uppercase tracking-[.08em] text-[hsl(var(--muted-foreground))]">
+        <span>O {formatPrice(latest.open)}</span>
+        <span>H {formatPrice(latest.high)}</span>
+        <span>L {formatPrice(latest.low)}</span>
+        <span>C {formatPrice(latest.close)}</span>
+        <span>V {formatVolume(latest.volume)}</span>
+      </div>
+      <div className="flex h-[190px] items-stretch gap-1">
+        {visible.map((candle) => {
+          const wickTop = ((high - candle.high) / range) * 100;
+          const wickHeight = Math.max(((candle.high - candle.low) / range) * 100, 1);
+          const bodyTop = ((high - Math.max(candle.open, candle.close)) / range) * 100;
+          const bodyHeight = Math.max((Math.abs(candle.close - candle.open) / range) * 100, 1.5);
+          const positive = candle.close >= candle.open;
+          const volumeHeight = Math.min(30, (candle.volume / Math.max(...visible.map((item) => item.volume), 1)) * 30);
+          return (
+            <div key={candle.startTime} className="relative min-w-0 flex-1">
+              <span className={`absolute left-1/2 w-px -translate-x-1/2 ${positive ? 'bg-[hsl(var(--primary)/.8)]' : 'bg-[hsl(var(--destructive)/.8)]'}`} style={{ top: `${wickTop}%`, height: `${wickHeight}%` }} />
+              <span className={`absolute left-[18%] right-[18%] ${positive ? 'bg-[hsl(var(--primary)/.9)]' : 'bg-[hsl(var(--destructive)/.9)]'}`} style={{ top: `${bodyTop}%`, height: `${bodyHeight}%` }} />
+              <span className={`absolute bottom-0 left-[15%] right-[15%] ${positive ? 'bg-[hsl(var(--primary)/.18)]' : 'bg-[hsl(var(--destructive)/.18)]'}`} style={{ height: `${volumeHeight}px` }} />
+            </div>
+          );
+        })}
+      </div>
+      <span className="absolute right-2 top-2 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--muted-foreground))]">PRICE SCALE</span>
+      <span className="absolute bottom-2 left-2 font-mono text-[8px] uppercase tracking-[.1em] text-[hsl(var(--muted-foreground))]">TIME SCALE · UTC</span>
+    </div>
   );
 }
 
@@ -454,6 +529,24 @@ function DeltaPanel({ delta }: { delta: DeltaSummary }) {
           <Metric label="Running delta" value={delta.runningDelta} signed />
           <Metric label="Cumulative delta" value={delta.cumulativeDelta} signed />
         </div>
+         <div className="mt-4 border-t border-[hsl(var(--border))] pt-3">
+           <div className="flex items-center justify-between">
+             <p className="panel-kicker">Current 5m bar delta</p>
+             <span className={`mono text-[11px] ${delta.currentBar && delta.currentBar.delta >= 0 ? 'text-[hsl(var(--primary))]' : 'text-[hsl(var(--destructive))]'}`}>
+               {delta.currentBar ? `${delta.currentBar.delta >= 0 ? '+' : ''}${formatVolume(delta.currentBar.delta)} (${delta.currentBar.deltaPercent.toFixed(1)}%)` : 'NOT CONNECTED'}
+             </span>
+           </div>
+           {delta.bars.length > 0 ? (
+             <div className="mt-3 flex h-12 items-end gap-1">
+               {delta.bars.map((bar) => {
+                 const height = Math.max(4, Math.min(100, Math.abs(bar.delta) / Math.max(...delta.bars.map((item) => Math.abs(item.delta)), 1) * 100));
+                 return <span key={bar.start} className={`flex-1 ${bar.delta >= 0 ? 'bg-[hsl(var(--primary)/.75)]' : 'bg-[hsl(var(--destructive)/.75)]'}`} style={{ height: `${height}%` }} title={`Delta ${bar.delta.toFixed(4)}`} />;
+               })}
+             </div>
+           ) : (
+             <p className="mt-3 font-mono text-[10px] text-[hsl(var(--muted-foreground))]">Delta bars will appear from the real trade stream.</p>
+           )}
+         </div>
       </div>
     </section>
   );
@@ -497,14 +590,20 @@ function EventTypesPanel() {
 function QualityPanel({ status, onClearSession }: { status: Status; onClearSession?: () => void }) {
   const quality = [
     { label: 'Socket', value: status.wsStatus, tone: status.connection === 'LIVE' ? 'good' : status.connection === 'CONNECTING' ? 'warn' : 'bad' },
-    { label: 'Book sync', value: status.bookSync, tone: status.bookSync.toLowerCase().includes('sync') ? 'good' : 'muted' },
+    { label: 'Trades', value: status.tradesQuality, tone: status.tradesQuality === 'LIVE' ? 'good' : status.tradesQuality === 'STALE' ? 'warn' : 'muted' },
+    { label: 'Candles', value: status.candlesQuality, tone: status.candlesQuality === 'LIVE' ? 'good' : status.candlesQuality === 'STALE' ? 'warn' : 'muted' },
+    { label: 'Footprint', value: status.footprintQuality, tone: status.footprintQuality === 'LIVE' ? 'good' : status.footprintQuality === 'STALE' ? 'warn' : 'muted' },
+    { label: 'Delta / CVD', value: status.deltaCvdQuality, tone: status.deltaCvdQuality === 'LIVE' ? 'good' : status.deltaCvdQuality === 'STALE' ? 'warn' : 'muted' },
+    { label: 'Book sync', value: status.bookSync, tone: 'muted' },
     { label: 'Last update', value: formatTime(status.lastUpdate), tone: status.lastUpdate ? 'good' : 'muted' },
+    { label: 'Receive latency', value: formatMetric(status.estimatedReceiveLatencyMs, ' ms'), tone: status.estimatedReceiveLatencyMs === null ? 'muted' : 'good' },
   ];
+  const qualityLabel = status.connection === 'LIVE' ? 'Healthy' : status.connection === 'STALE' || status.connection === 'RECONNECTING' ? 'Stale' : status.connection === 'CONNECTING' ? 'Pending' : 'Offline';
   return (
     <section className="panel overflow-hidden">
-      <SectionTitle icon={Gauge} label="Data quality" detail="pipeline observability" action={<span data-testid="status-quality" className={`flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[.08em] ${status.connection === 'LIVE' ? 'text-[hsl(var(--primary))]' : status.connection === 'CONNECTING' ? 'text-[hsl(var(--accent))]' : 'text-[hsl(var(--destructive))]'}`}><span className={`status-dot ${connectionMeta(status.connection).className}`} /> {status.connection === 'LIVE' ? 'Healthy' : status.connection === 'CONNECTING' ? 'Pending' : 'Offline'}</span>} />
+      <SectionTitle icon={Gauge} label="Data quality" detail="pipeline observability" action={<span data-testid="status-quality" className={`flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[.08em] ${status.connection === 'LIVE' ? 'text-[hsl(var(--primary))]' : status.connection === 'CONNECTING' || status.connection === 'STALE' || status.connection === 'RECONNECTING' ? 'text-[hsl(var(--accent))]' : 'text-[hsl(var(--destructive))]'}`}><span className={`status-dot ${connectionMeta(status.connection).className}`} /> {qualityLabel}</span>} />
       <div className="p-3">
-        <div className="space-y-2.5">
+         <div className="space-y-2.5">
           {quality.map((item) => (
             <div data-testid={`quality-${item.label.toLowerCase().replace(' ', '-')}`} key={item.label} className="flex items-center justify-between gap-3 font-mono text-[10px]">
               <span className="text-[hsl(var(--muted-foreground))]">{item.label}</span>
@@ -558,11 +657,14 @@ function Footer({ status }: { status: Status }) {
 function OrderFlowTerminal({
   trades = [],
   footprint = [],
+  candles = [],
+  timeframe = '5m',
   status: statusProp,
   delta: deltaProp,
   lastPrice,
   onReconnect,
   onClearSession,
+  onTimeframeChange,
 }: OrderFlowTerminalProps) {
   const status = { ...emptyStatus, ...statusProp };
   const delta = { ...emptyDelta, ...deltaProp };
@@ -585,7 +687,7 @@ function OrderFlowTerminal({
 
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1.7fr)_minmax(290px,.8fr)]">
           <div className="min-w-0 space-y-3">
-            <PriceWorkspace lastPrice={lastPrice} windowSize={windowSize} onWindowChange={setWindowSize} />
+             <PriceWorkspace lastPrice={lastPrice} candles={candles} windowSize={timeframe} onWindowChange={(value) => { setWindowSize(value); onTimeframeChange?.(value); }} />
             <div className="grid gap-3 xl:grid-cols-[minmax(0,.95fr)_minmax(0,1.05fr)]">
                <TradesPanel trades={trades} connection={status.connection} />
               <FootprintPanel footprint={footprint} />
@@ -612,88 +714,96 @@ function OrderFlowTerminal({
 }
 
 function Home() {
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [footprint, setFootprint] = useState<FootprintRow[]>([]);
-  const [status, setStatus] = useState<Status>({
-    ...emptyStatus,
-    connection: 'CONNECTING',
-    wsStatus: 'CONNECTING',
-    bookSync: 'NOT IMPLEMENTED',
-  });
-  const [delta, setDelta] = useState<DeltaSummary>(emptyDelta);
-  const processorRef = useRef<TradeProcessor | null>(null);
+  const [market, setMarket] = useState<MarketDataState>(() => new MarketDataStore('5m').snapshot());
+  const [renderingFps, setRenderingFps] = useState(0);
+  const storeRef = useRef<MarketDataStore | null>(null);
   const streamRef = useRef<BinanceTradeStream | null>(null);
-  const managerRef = useRef<UIManager | null>(null);
 
   useEffect(() => {
-    const processor = new TradeProcessor();
-    const manager = new UIManager();
+    const store = new MarketDataStore('5m');
     const stream = new BinanceTradeStream({
       symbol: 'btcusdt',
-      onStatus: (nextStatus) => {
-        manager.setStreamStatus(nextStatus);
-      },
-      onTrade: (trade: StreamTrade) => {
-        const nextSnapshot = processor.process(trade);
-        manager.setProcessorSnapshot(nextSnapshot);
-        setTrades(processor.trades());
-        setFootprint(processor.footprint.rows());
-        setDelta({
-          runningBuyVolume: nextSnapshot.runningBuyVolume,
-          runningSellVolume: nextSnapshot.runningSellVolume,
-          runningDelta: nextSnapshot.runningDelta,
-          cumulativeDelta: processor.delta.cumulative,
-        });
-      },
+      interval: '5m',
+      onStatus: (nextStatus) => store.handleStatus(nextStatus),
+      onTrade: (trade: StreamTrade) => store.handleTrade(trade),
+      onCandle: (candle) => store.handleCandle(candle),
     });
 
-    const unsubscribe = manager.subscribe((nextState) => {
-      setStatus({
-        connection: nextState.stream.connection,
-        wsStatus: nextState.stream.wsStatus,
-        eventCount: nextState.processor.tradeCount,
-        droppedEvents: nextState.droppedEvents,
-        reconnectCount: nextState.stream.reconnectCount,
-        bookSync: nextState.bookSync,
-        lastUpdate: nextState.lastUpdate,
-        messagesPerSecond: nextState.processor.messagesPerSecond,
-        processingLatency: nextState.processor.processingLatencyMs,
-        renderingFps: nextState.renderingFps,
-        streamReason: nextState.stream.reason,
-      });
+    let frameCount = 0;
+    let frameWindowStartedAt = performance.now();
+    const unsubscribe = store.subscribe((nextState) => {
+      frameCount += 1;
+      const elapsed = performance.now() - frameWindowStartedAt;
+      if (elapsed >= 1_000) {
+        setRenderingFps(Math.round((frameCount * 1_000) / elapsed));
+        frameCount = 0;
+        frameWindowStartedAt = performance.now();
+      }
+      setMarket(nextState);
     });
 
-    processorRef.current = processor;
+    storeRef.current = store;
     streamRef.current = stream;
-    managerRef.current = manager;
     stream.start();
 
     return () => {
       unsubscribe();
       stream.stop();
-      processorRef.current = null;
+      storeRef.current = null;
       streamRef.current = null;
-      managerRef.current = null;
     };
   }, []);
 
   const clearSession = () => {
-    processorRef.current?.reset();
-    managerRef.current?.resetSession();
-    setTrades([]);
-    setFootprint([]);
-    setDelta(emptyDelta);
+    storeRef.current?.clearSession();
+  };
+
+  const quality = market.dataQuality;
+  const status: Status = {
+    ...emptyStatus,
+    connection: quality.connection,
+    wsStatus: quality.wsStatus,
+    eventCount: quality.eventCount,
+    droppedEvents: quality.droppedEvents,
+    reconnectCount: quality.reconnectCount,
+    lastUpdate: quality.lastReceivedEventTime,
+    messagesPerSecond: market.processor.messagesPerSecond,
+    processingLatency: market.processor.processingLatencyMs,
+    renderingFps,
+    connectionTime: quality.connectionTime,
+    lastReceivedEventTime: quality.lastReceivedEventTime,
+    lastMessageTimestamp: quality.lastMessageTimestamp,
+    estimatedReceiveLatencyMs: quality.estimatedReceiveLatencyMs,
+    tradesQuality: quality.trades,
+    candlesQuality: quality.candles,
+    footprintQuality: quality.footprint,
+    deltaCvdQuality: quality.deltaCvd,
+    streamReason: quality.reason,
+  };
+  const delta: DeltaSummary = {
+    runningBuyVolume: market.processor.runningBuyVolume,
+    runningSellVolume: market.processor.runningSellVolume,
+    runningDelta: market.processor.runningDelta,
+    cumulativeDelta: market.processor.deltaBars.reduce((total, bar) => total + bar.delta, 0),
+    currentBar: market.processor.currentDeltaBar,
+    bars: market.processor.deltaBars,
   };
 
   return (
     <OrderFlowTerminal
-      trades={trades}
-      footprint={footprint}
+      trades={market.trades}
+      footprint={market.footprint}
       status={status}
       delta={delta}
-      lastPrice={trades[0]?.price ?? null}
+      candles={market.candles}
+      timeframe={market.timeframe}
+      lastPrice={market.lastPrice}
       onReconnect={() => streamRef.current?.reconnect()}
       onClearSession={clearSession}
+      onTimeframeChange={(value) => {
+        storeRef.current?.setTimeframe(value);
+        streamRef.current?.setInterval(value);
+      }}
     />
   );
 }

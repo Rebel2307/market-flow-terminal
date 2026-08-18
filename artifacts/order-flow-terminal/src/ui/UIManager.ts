@@ -27,6 +27,10 @@ export class UIManager {
         connection: "CONNECTING",
         wsStatus: "CONNECTING",
         reconnectCount: 0,
+        connectionTime: null,
+        lastReceivedEventTime: null,
+        lastMessageTimestamp: null,
+        estimatedReceiveLatencyMs: null,
       },
       processor: {
         lastTrade: null,
@@ -36,6 +40,8 @@ export class UIManager {
         runningDelta: 0,
         messagesPerSecond: 0,
         processingLatencyMs: 0,
+        currentDeltaBar: null,
+        deltaBars: [],
       },
       lastUpdate: null,
       droppedEvents: 0,
@@ -82,6 +88,8 @@ export class UIManager {
       runningDelta: 0,
       messagesPerSecond: 0,
       processingLatencyMs: 0,
+      currentDeltaBar: null,
+      deltaBars: [],
     };
     this.state.lastUpdate = null;
     this.state.droppedEvents = 0;

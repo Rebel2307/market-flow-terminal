@@ -25,6 +25,8 @@ export class TradeProcessor {
     runningDelta: 0,
     messagesPerSecond: 0,
     processingLatencyMs: 0,
+    currentDeltaBar: null,
+    deltaBars: [],
   };
   private windowStartedAt = performance.now();
   private windowTradeCount = 0;
@@ -64,6 +66,8 @@ export class TradeProcessor {
     this.latest.processingLatencyMs = Number(
       (performance.now() - startedAt).toFixed(2),
     );
+    this.latest.currentDeltaBar = this.delta.current;
+    this.latest.deltaBars = this.delta.bars();
     return this.snapshot();
   }
 
@@ -88,6 +92,8 @@ export class TradeProcessor {
       runningDelta: 0,
       messagesPerSecond: 0,
       processingLatencyMs: 0,
+      currentDeltaBar: null,
+      deltaBars: [],
     };
     this.footprint.clear();
     this.delta.reset();

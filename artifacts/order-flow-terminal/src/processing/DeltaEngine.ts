@@ -10,7 +10,7 @@ export class DeltaEngine {
   private readonly barSizeMs: number;
   private readonly completedBars: DeltaBar[] = [];
 
-  constructor(barSizeMs = 60_000) {
+  constructor(barSizeMs = 300_000) {
     this.barSizeMs = barSizeMs;
   }
 
@@ -25,6 +25,8 @@ export class DeltaEngine {
         delta: 0,
         buyVolume: 0,
         sellVolume: 0,
+        totalVolume: 0,
+        deltaPercent: 0,
       };
     }
 
@@ -37,6 +39,12 @@ export class DeltaEngine {
       this.currentBar.delta -= trade.quantity;
       this.cumulativeDelta -= trade.quantity;
     }
+    this.currentBar.totalVolume =
+      this.currentBar.buyVolume + this.currentBar.sellVolume;
+    this.currentBar.deltaPercent =
+      this.currentBar.totalVolume === 0
+        ? 0
+        : (this.currentBar.delta / this.currentBar.totalVolume) * 100;
     return { ...this.currentBar };
   }
 

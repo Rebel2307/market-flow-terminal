@@ -1,0 +1,189 @@
+We are continuing the existing "Our Order Flow Terminal" project.
+
+IMPORTANT: Do NOT redesign the UI. Do NOT change the overall layout. Do NOT add fake/synthetic market data. Do NOT connect GitHub yet. Do NOT add Binance API keys. Keep using public Binance market data only.
+
+CURRENT STATUS:
+
+The application is already running.
+BTCUSDT real-time trade data is appearing in Time & Sales.
+The terminal has a working visual shell.
+The main chart currently says "Candlestick series not connected".
+Footprint, delta, CVD and other panels exist but need to be connected to the same real trade stream.
+GOAL FOR THIS UPDATE: Make the existing terminal use ONE reliable real-time market-data pipeline.
+
+TASK 1 — REAL-TIME CANDLESTICKS
+
+Connect the BTCUSDT candlestick chart to Binance's official public WebSocket kline stream.
+
+Default timeframe: 5 minutes.
+
+Support: 1m 3m 5m 15m 30m 1h 4h 1d
+
+When the user changes timeframe, subscribe/use the corresponding Binance kline stream.
+
+Display:
+
+Open
+High
+Low
+Close
+Volume
+Current price
+Candle timestamps
+Do not use mock candles.
+
+TASK 2 — SINGLE SOURCE OF TRUTH
+
+The application should maintain a central market-data state.
+
+Structure it approximately as:
+
+MarketDataStore ├── lastPrice ├── trades ├── candles ├── footprint ├── delta ├── cumulativeDelta ├── connection └── dataQuality
+
+Do not create separate independent WebSocket connections for every UI component unless technically necessary.
+
+The chart, Time & Sales, footprint and delta panels should consume the same processed market-data state.
+
+TASK 3 — FOOTPRINT
+
+Use the existing REAL trade stream.
+
+For every price level calculate:
+
+bidVolume askVolume totalVolume delta
+
+Display:
+
+PRICE | BID × ASK | DELTA | TOTAL
+
+Use Binance trade-side information correctly.
+
+Do not guess buy/sell direction from candle color.
+
+Document exactly how aggressor-side classification is determined from Binance trade data.
+
+TASK 4 — DELTA
+
+Calculate:
+
+Delta = Ask Volume - Bid Volume
+
+For every 5-minute candle calculate:
+
+Buy volume
+Sell volume
+Total volume
+Delta
+Delta %
+Display the delta panel using real data.
+
+TASK 5 — CUMULATIVE DELTA
+
+Implement:
+
+CVD = cumulative sum of candle delta
+
+Keep CVD synchronized with the same trade stream.
+
+Do not reset CVD on every UI render.
+
+TASK 6 — TIME & SALES
+
+Keep the existing Time & Sales panel.
+
+For each trade show:
+
+Timestamp Price Quantity Side
+
+Newest trades should appear at the top.
+
+Limit the visible rows so the mobile browser does not become slow.
+
+Keep a larger internal rolling buffer separately if needed.
+
+TASK 7 — CONNECTION RELIABILITY
+
+Implement clear states:
+
+CONNECTING LIVE STALE DISCONNECTED RECONNECTING
+
+Track:
+
+connection time
+last received event time
+event count
+reconnect count
+last message timestamp
+estimated receive latency
+If no valid market-data event arrives for a reasonable timeout: mark the connection STALE and reconnect.
+
+Never show stale data as LIVE.
+
+TASK 8 — DATA QUALITY
+
+Update the existing Data Quality panel.
+
+Show:
+
+Trades LIVE Candles LIVE Footprint LIVE Delta/CVD LIVE
+
+Also show:
+
+Events received Reconnects Last event Connection state
+
+If any module has no valid data, clearly show NOT CONNECTED instead of fake values.
+
+TASK 9 — ERROR HANDLING
+
+Handle:
+
+WebSocket close
+WebSocket error
+malformed messages
+invalid symbol
+subscription failure
+reconnect
+browser sleep/background behavior
+Use exponential backoff for repeated reconnect attempts.
+
+Do not create infinite reconnect loops that overload Binance.
+
+TASK 10 — PERFORMANCE
+
+This is a real-time order-flow terminal.
+
+Prioritize:
+
+correctness low latency low CPU usage low memory usage
+
+Do not rerender the entire application for every trade.
+
+Batch UI updates where appropriate while keeping market data processing real-time.
+
+IMPORTANT BINANCE RULE: Use Binance's officially documented public WebSocket market-data streams. Do not use undocumented endpoints.
+
+Do not implement the order-book reconstruction in this update. That will be V0.2 and must be implemented separately with proper snapshot + depth-event synchronization and sequence-gap detection.
+
+AT THE END: Give me a short technical report containing:
+
+Which Binance streams are currently being used
+How trade data flows through the system
+How candlesticks are generated
+How bid/ask volume is determined
+How footprint is calculated
+How delta is calculated
+How CVD is calculated
+How reconnect works
+Current latency/data-quality measurements
+What remains for V0.2
+Do not claim the system is accurate unless the data flow has actually been validated.
+
+21 hours ago
+Continuing app work
+
+Continuing app work
+Continuing app work
+
+I need to focus on continuing with the existing app rather than redesigning it, so it’s relevant to read up on skills like React and Vite for modifications. I think I already have some of that context, but double-checking wouldn’t hurt. I need to efficiently inspect the files, especially since workflows failed and I'll need logs before restarting. I can work on reviewing specific files like App, Home, and other data modules. Using parallel processing to read through them seems like a good approach!
+
+I’m extending the existing pipeline in place without changing the visual shell: first I’ll inspect the current stream, processor, and terminal wiring, then add shared candles, five-minute delta/CVD aggregation, batched UI state, and stricter connection-quality states before restarting the failed preview.
